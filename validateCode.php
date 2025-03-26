@@ -1,6 +1,6 @@
 <?php
 // اتصال به دیتابیس یا فایل JSON برای بررسی کدها
-$codesFile = 'https://github.com/cinascorp/08/blob/codes.json';  // فرضاً کدها در یک فایل JSON ذخیره می‌شوند
+$codesFile = 'https://github.com/cinascorp/08/codes.json';  // فرضاً کدها در یک فایل JSON ذخیره می‌شوند
 $codes = json_decode(file_get_contents($codesFile), true);
 
 if (isset($_GET['code'])) {
