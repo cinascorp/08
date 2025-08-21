@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>UAV — مانیتورینگ</title>
+  <link rel="stylesheet" href="https://js.arcgis.com/4.34/esri/themes/light/main.css" />
+  <script src="https://js.arcgis.com/4.34/"></script>
+  <style>
+    html, body, #viewDiv { padding:0; margin:0; height:100%; width:100%; direction: rtl; font-family: "Tahoma", Arial, sans-serif; }
+    .esri-popup__content { font-size: 12px; line-height:1.4; text-align: right; direction: rtl; }
+    .legend-title { font-weight: 700; margin-bottom:6px; }
+    .flightradar-link { color: #1a73e8; text-decoration: underline; cursor:pointer; }
+    .status-panel {
+      position: absolute; top: 10px; left: 10px; z-index: 999;
+      background: rgba(255,255,255,0.95); padding: 8px 10px; border-radius: 6px; font-size:12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2); direction: ltr;
+      max-width: 320px;
+    }
+    .status-panel b { display:block; margin-bottom:4px; text-align:left; direction:rtl; }
+    .status-row { display:flex; justify-content:space-between; gap:8px; margin-bottom:4px; align-items:center; }
+    .status-ok { color: green; font-weight:700; }
+    .status-err { color: #c62828; font-weight:700; }
+    .uav-tooltip {
+      background: rgba(0,0,0,0.75); color: #fff; padding:6px 8px; border-radius:4px; font-size:12px;
+      pointer-events:none; transform: translate(-50%,-120%);
+    }
+  </style>
+</head>
+<body>
+  <div id="viewDiv"></div>
+
+  <div id="status" class="status-panel" role="status" aria-live="polite">
+    <b>وضعیت منابع داده</b>
+    <div id="s-adsb" class="status-row"><span>ADSB.lol</span><span id="s-adsb-val">در حال انتظار...</span></div>
+    <div id="s-fr24" class="status-row"><span>Flightradar24</span><span id="s-fr24-val">در حال انتظار...</span></div>
+    <div id="s-opensky" class="status-row"><span>OpenSky</span><span id="s-opensky-val">در حال انتظار...</span></div>
+    <div id="s-last" style="font-size:11px; margin-top:6px; color:#444;">آخرین بروزرسانی: —</div>
+  </div>
+
+  <script>
+    require([
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/layers/GraphicsLayer",
+      "esri/Graphic",
+      "esri/widgets/BasemapToggle",
+      "esri/widgets/Legend",
+      "esri/widgets/ScaleBar",
+      "esri/geometry/Point"
+    ], function(Map, MapView, GraphicsLayer, Graphic, BasemapToggle, Legend, ScaleBar, Point) {
+
+      // ---------- تنظیمات ----------
+      const PROXY_PREFIX = "https://api.allorigins.win/raw?url="; // پراکسی برای رفع CORS
+      const POLL_MS = 5000; // 5 ثانیه
+
+      // آیکون‌های PNG از لینک‌های معتبر
+      const icons = {
+        drone: PROXY_PREFIX + encodeURIComponent('https://png.pngtree.com/element_our/20200610/ourmid/pngtree-drone-vector-icon-image_2238839.jpg'),
+        military: PROXY_PREFIX + encodeURIComponent('https://png.pngtree.com/element_our/20200610/ourmid/pngtree-fighter-jet-vector-icon-image_2238840.jpg'),
+        civilian: PROXY_PREFIX + encodeURIComponent('https://png.pngtree.com/element_our/20200610/ourmid/pngtree-airport-vector-icon-image_2238841.jpg')
+      };
+
+      // ---------- نقشه و ویجت‌ها ----------
+      const map = new Map({ basemap: "arcgis-imagery" });
+      const view = new MapView({
+        container: "viewDiv",
+        map,
+        center: [53, 30],
+        zoom: 7
+      });
+
+      const basemapToggle = new BasemapToggle({ view, nextBasemap: "streets-vector" });
+      const legend = new Legend({ view });
+      const scaleBar = new ScaleBar({ view, unit: "metric" });
+
+      view.ui.add(basemapToggle, "top-right");
+      view.ui.add(legend, "bottom-left");
+      view.ui.add(scaleBar, "bottom-right");
+
+      // ---------- لایه‌ها ----------
+      const militaryLayer = new GraphicsLayer({ title: "نظامی" });
+      const civilianLayer = new GraphicsLayer({ title: "غیردولتی" });
+      const droneLayer = new GraphicsLayer({ title: "پهپاد" });
+      map.addMany([civilianLayer, militaryLayer, droneLayer]);
+
+      // stores
+      const graphicStore = { military: new Map(), civilian: new Map(), drone: new Map() };
+      const lastSeen = new Map();
+
+      function setStatus(id, ok, message) {
+        const el = document.getElementById('s-' + id + '-val');
+        const row = document.getElementById('s-' + id);
+        if (!el) return;
+        el.textContent = message || (ok ? 'OK' : 'خطا');
+        el.className = ok ? 'status-ok' : 'status-err';
+        document.getElementById('s-last').textContent = 'آخرین بروزرسانی: ' + (new Date()).toLocaleString('fa-IR');
+      }
+
+      function makeFlightId(f) {
+        return (f.hex || f.icao24 || f.id || (f.callsign && f.callsign.trim()) || `${f.lat}_${f.lon}_${f.source}`).toString();
+      }
+
+      function isDrone(f) {
+        const alt = Number(f.alt_baro || f.alt_geom || f.alt || 0);
+        const speed = Number(f.gs || f.velocity || f.speed || 0);
+        const model = (f.model || f.t || f.type || "").toString();
+        const modelHint = /MQ|UAV|SHA|BAYR|MAVIC|DJI|REAPER|HERON|ORLAN|FORPOST|WINGLOONG|SYMA|PARROT/i;
+        const simpleAltitude = (alt > 0 && alt < 5000);
+        const simpleSpeed = (speed > 0 && speed < 100);
+        const noCallsign = !f.callsign || f.callsign === 'نامشخص' || /^\s*$/.test(f.callsign);
+        return (
+          (simpleAltitude && simpleSpeed) ||
+          modelHint.test(model) ||
+          (noCallsign && (simpleAltitude || simpleSpeed)) ||
+          (f.category && /UAV|DRONE/i.test(f.category))
+        );
+      }
+
+      function normalizeFlight(raw, source) {
+        function get(v) { return v === undefined ? null : v; }
+        let lat = null, lon = null, alt_baro = null, gs = null, heading = null, callsign = null, model = null, hex = null, r = null, category = null;
+        if (Array.isArray(raw)) {
+          hex = get(raw[0]) || get(raw.icao24);
+          callsign = get(raw[1]) || 'نامشخص';
+          lat = Number(get(raw[6]) || get(raw[1]) || null) || null;
+          lon = Number(get(raw[5]) || get(raw[2]) || null) || null;
+          alt_baro = get(raw[7] || raw[4] || null);
+          gs = get(raw[9] || raw[5] || null);
+          heading = get(raw[10] || raw[3] || 0);
+          model = '';
+        } else {
+          lat = Number(get(raw.lat) || get(raw.latitude) || get(raw[1]) || get(raw.laty) || null) || null;
+          lon = Number(get(raw.lon) || get(raw.longitude) || get(raw[2]) || get(raw.long) || null) || null;
+          alt_baro = get(raw.alt_baro) || get(raw.alt) || get(raw.altitude) || get(raw[7]) || null;
+          gs = get(raw.gs) || get(raw.velocity) || get(raw.speed) || get(raw[5]) || null;
+          heading = get(raw.track) || get(raw.heading) || get(raw[3]) || 0;
+          callsign = raw.callsign || raw.flight || 'نامشخص';
+          model = raw.model || raw.t || raw[8] || '';
+          hex = raw.hex || raw.icao24 || raw[0] || null;
+          r = raw.r || raw.registration || null;
+          category = raw.category || raw.cat || null;
+        }
+        return {
+          source,
+          id: raw.id || raw.icao24 || raw.hex || callsign || null,
+          lat, lon, alt_baro, alt_geom: raw.alt_geom || null, gs, heading, callsign, model, hex, r, category, raw
+        };
+      }
+
+      function makePopupContent(f) {
+        const frLink = (f.hex || f.callsign) ? `<a class="flightradar-link" href="https://www.flightradar24.com/${encodeURIComponent(f.callsign || '')}" target="_blank" rel="noreferrer">نمایش در FLR24</a>` : '';
+        return `
+          <div style="direction:rtl; text-align:right;">
+            <div><b>منبع: </b>${f.source || 'نامشخص'}</div>
+            <div><b>شناسه: </b>${f.hex || f.id || 'نامشخص'}</div>
+            <div><b>کال‌ساین: </b>${f.callsign || 'نامشخص'}</div>
+            <div><b>مدل/نوع: </b>${f.model || 'نامشخص'}</div>
+            <div><b>ارتفاع (فوت): </b>${f.alt_baro || 'نامشخص'}</div>
+            <div><b>سرعت (گره): </b>${f.gs || 'نامشخص'}</div>
+            <div><b>جهت: </b>${Math.round(f.heading || 0)}°</div>
+            <div><b>عرض/طول: </b>${f.lat || 'نامشخص'} / ${f.lon || 'نامشخص'}</div>
+            <div style="margin-top:6px">${frLink}</div>
+          </div>
+        `;
+      }
+
+      function getIconSize(zoom) {
+        if (zoom >= 11) return 28;
+        if (zoom >= 8) return 20;
+        if (zoom >= 6) return 14;
+        return 10;
+      }
+
+      function upsertGraphic(flight) {
+        const id = makeFlightId(flight);
+        const is_drone = isDrone(flight);
+        const layerKey = is_drone ? 'drone' : (flight.source === 'military' ? 'military' : 'civilian');
+        const layer = (layerKey === 'drone') ? droneLayer : (layerKey === 'military' ? militaryLayer : civilianLayer);
+        const store = graphicStore[layerKey];
+        if (flight.lat === null || flight.lon === null) return;
+
+        lastSeen.set(id, Date.now());
+
+        if (store.has(id)) {
+          const g = store.get(id);
+          g.geometry = new Point({ longitude: flight.lon, latitude: flight.lat });
+          g.attributes = Object.assign({}, g.attributes, flight);
+          const symbol = g.symbol;
+          symbol.angle = flight.heading || 0;
+          const size = getIconSize(view.zoom);
+          symbol.width = size; symbol.height = size;
+          g.symbol = symbol;
+        } else {
+          const size = getIconSize(view.zoom);
+          const url = layerKey === 'drone' ? icons.drone : (layerKey === 'military' ? icons.military : icons.civilian);
+          // دیباگ URL آیکون
+          console.log('Loading icon:', url);
+          const g = new Graphic({
+            geometry: new Point({ longitude: flight.lon, latitude: flight.lat }),
+            symbol: {
+              type: "picture-marker",
+              url,
+              width: size,
+              height: size,
+              angle: flight.heading || 0
+            },
+            attributes: flight,
+            popupTemplate: {
+              title: is_drone ? "پهپاد" : (layerKey === 'military' ? "پرواز نظامی" : "پرواز غیرنظامی"),
+              content: makePopupContent(flight)
+            }
+          });
+          layer.add(g);
+          store.set(id, g);
+        }
+      }
+
+      function cleanupStale() {
+        const now = Date.now();
+        const STALE_MS = 30 * 1000;
+        lastSeen.forEach((t, id) => {
+          if (now - t > STALE_MS) {
+            ['military','civilian','drone'].forEach(k => {
+              const s = graphicStore[k];
+              if (s.has(id)) {
+                try {
+                  const g = s.get(id);
+                  (k === 'drone' ? droneLayer : (k === 'military' ? militaryLayer : civilianLayer)).remove(g);
+                } catch(e) {}
+                s.delete(id);
+              }
+            });
+            lastSeen.delete(id);
+          }
+        });
+      }
+
+      async function fetchText(url, options) {
+        const full = PROXY_PREFIX ? (PROXY_PREFIX + encodeURIComponent(url)) : url;
+        try {
+          const res = await fetch(full, Object.assign({ cache: 'no-store' }, options || {}));
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.text();
+        } catch (e) {
+          console.error('fetchText error:', e);
+          throw e;
+        }
+      }
+
+      async function fetchAdsbData() {
+        const url = 'https://api.adsb.lol/v2/mil';
+        try {
+          const text = await fetchText(url);
+          const clean = text.replace(/^while\(1\);/, '').trim();
+          const data = JSON.parse(clean);
+          const arr = Array.isArray(data) ? data : (data.aircraft || data.ac || []);
+          setStatus('adsb', true, 'دریافت ' + arr.length);
+          return arr.map(a => normalizeFlight(a, 'military'));
+        } catch (e) {
+          console.warn('fetchAdsbData error', e);
+          setStatus('adsb', false, 'خطا: ' + (e.message || e));
+          return [];
+        }
+      }
+
+      async function fetchFlightradarData() {
+        const url = 'https://data-cloud.flightradar24.com/zones/fcgi/feeds.js';
+        try {
+          const text = await fetchText(url);
+          const clean = text.replace(/^while\(1\);/, '').trim();
+          const data = JSON.parse(clean);
+          const flights = [];
+          for (const [key, value] of Object.entries(data)) {
+            if (!Array.isArray(value)) continue;
+            flights.push(normalizeFlight({
+              id: key,
+              lat: value[1],
+              lon: value[2],
+              track: value[3],
+              alt_baro: value[4],
+              gs: value[5],
+              flight: value[13],
+              hex: value[0],
+              model: value[8],
+              r: value[9],
+              category: value[11]
+            }, 'civilian'));
+          }
+          setStatus('fr24', true, 'دریافت ' + flights.length);
+          return flights;
+        } catch(e) {
+          console.warn('fetchFlightradarData error', e);
+          setStatus('fr24', false, 'خطا: ' + (e.message || e));
+          return [];
+        }
+      }
+
+      async function fetchOpenSkyData() {
+        const url = 'https://opensky-network.org/api/states/all';
+        try {
+          const text = await fetchText(url);
+          const data = JSON.parse(text);
+          const states = data.states || [];
+          const mapped = states.map(s => normalizeFlight({
+            icao24: s[0], callsign: s[1], lon: s[5], lat: s[6], alt_baro: s[7],
+            velocity: s[9], heading: s[10], baro_rate: s[11], alt_geom: s[13], hex: s[0]
+          }, 'civilian'));
+          setStatus('opensky', true, 'دریافت ' + mapped.length);
+          return mapped;
+        } catch(e) {
+          console.warn('fetchOpenSkyData error', e);
+          setStatus('opensky', false, 'خطا: ' + (e.message || e));
+          return [];
+        }
+      }
+
+      let isFirst = true;
+      async function updateLoop() {
+        try {
+          const res = await Promise.allSettled([fetchAdsbData(), fetchFlightradarData(), fetchOpenSkyData()]);
+          const arr = [];
+          res.forEach(r => { if (r.status === 'fulfilled') arr.push(...r.value); });
+          const valid = arr.filter(f => f.lat !== null && f.lon !== null);
+          valid.forEach(f => upsertGraphic(f));
+          if (isFirst && valid.length > 0) {
+            try {
+              const pts = valid.slice(0,50).map(v => ({ latitude: v.lat, longitude: v.lon }));
+              view.goTo({ target: pts, zoom: Math.max(6, view.zoom) });
+            } catch(e) {}
+            isFirst = false;
+          }
+          cleanupStale();
+        } catch(e) {
+          console.error('updateLoop error', e);
+        } finally {
+          setTimeout(updateLoop, POLL_MS);
+        }
+      }
+
+      let tooltipDiv = null;
+      function ensureTooltip() {
+        if (!tooltipDiv) {
+          tooltipDiv = document.createElement('div');
+          tooltipDiv.className = 'uav-tooltip';
+          tooltipDiv.style.position = 'absolute';
+          tooltipDiv.style.display = 'none';
+          document.body.appendChild(tooltipDiv);
+        }
+      }
+
+      let lastPointer = 0;
+      view.on('pointer-move', async (evt) => {
+        const now = Date.now();
+        if (now - lastPointer < 80) return;
+        lastPointer = now;
+        ensureTooltip();
+        const hit = await view.hitTest(evt);
+        const graphic = hit.results && hit.results[0] && hit.results[0].graphic;
+        if (graphic && graphic.attributes) {
+          const a = graphic.attributes;
+          tooltipDiv.innerHTML = `<div><b>${a.callsign || a.hex || '—'}</b></div><div>Alt: ${a.alt_baro || '—'} — Spd: ${a.gs || '—'}</div>`;
+          tooltipDiv.style.left = evt.x + 'px';
+          tooltipDiv.style.top = evt.y + 'px';
+          tooltipDiv.style.display = 'block';
+        } else {
+          if (tooltipDiv) tooltipDiv.style.display = 'none';
+        }
+      });
+      view.on('pointer-leave', () => { if (tooltipDiv) tooltipDiv.style.display = 'none'; });
+
+      view.when(() => {
+        legend.layerInfos = [
+          { layer: militaryLayer, title: "پروازهای نظامی" },
+          { layer: droneLayer, title: "پهپادها" },
+          { layer: civilianLayer, title: "پروازهای غیرنظامی" }
+        ];
+      });
+
+      setStatus('adsb', true, 'در انتظار اولین دریافت');
+      setStatus('fr24', true, 'در انتظار اولین دریافت');
+      setStatus('opensky', true, 'در انتظار اولین دریافت');
+
+      updateLoop();
+
+      console.log("UAV monitor started. Polling every", POLL_MS, "ms. PROXY_PREFIX:", PROXY_PREFIX);
+    });
+  </script>
+</body>
+</html>
