@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="fa">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>UAV 2D/3D — Google Maps</title>
+	<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+	<style>
+		:root{
+			--bg:#0a0a0a;--panel:#101418;--text:#e7f5ff;--border:#243140;--muted:#9aa2aa;
+			--mil:#b00020;--passenger:#4dacff;--commercial:#ffe34d;--private:#b56dff;--droneLow:#ffffff;--droneHigh:#777777
+		}
+		html,body{height:100%;margin:0;padding:0;background:var(--bg);color:var(--text)}
+		#container{position:fixed; inset:0}
+		#map2d, map3d-element{position:absolute; inset:0}
+		.controls{position:fixed; top:10px; left:10px; z-index:10; display:flex; gap:8px}
+		.legend{position:fixed; left:10px; bottom:10px; z-index:10; background:rgba(16,20,24,.9); border:1px solid var(--border); border-radius:.5rem; padding:.5rem .75rem; font-size:.9rem}
+		.legend .item{display:flex; align-items:center; gap:.4rem; margin:.2rem 0}
+		.legend .sw{width:16px; height:16px; border-radius:3px; display:inline-block}
+		.file-input{position:fixed; top:10px; right:10px; z-index:10; background:rgba(16,20,24,.9); border:1px solid var(--border); border-radius:.5rem; padding:.4rem .6rem}
+	</style>
+</head>
+<body>
+	<div class="controls">
+		<button id="toggle3d" class="btn btn-sm btn-outline-light">3D</button>
+		<button id="refreshBtn" class="btn btn-sm btn-outline-warning">Refresh</button>
+	</div>
+	<div class="file-input">
+		<label class="form-label small mb-0">Load curl JSON
+			<input type="file" id="fileInput" accept=".json,.js" class="form-control form-control-sm" />
+		</label>
+	</div>
+	<div class="legend">
+		<div class="item"><span class="sw" style="background:var(--mil)"></span><span>نظامی</span></div>
+		<div class="item"><span class="sw" style="background:var(--passenger)"></span><span>مسافربری</span></div>
+		<div class="item"><span class="sw" style="background:var(--private)"></span><span>خصوصی</span></div>
+		<div class="item"><span class="sw" style="background:var(--commercial)"></span><span>تجاری</span></div>
+		<div class="item"><span class="sw" id="droneSw" style="background:#fff"></span><span>پهپاد (شدت ارتفاع)</span></div>
+	</div>
+	<div id="container">
+		<div id="map2d"></div>
+	</div>
+
+	<script>
+	// Google Maps API loader (same style as gmp)
+	(function(g){var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src=`https://maps.${c}apis.com/maps/api/js?`+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})({key:"AIzaSyA6myHzS10YXdcazAFalmXvDkrYCp5cLc8",v:"beta"});
+	</script>
+	<script>
+	(function(){
+		let map2d, map3dEl; // 2D Map and 3D Map element
+		let use3d = false;
+		let markers2d = new Map();
+		let models3d = new Map();
+		let flightsByHex = new Map();
+		let lastFetchBounds = null;
+		const DEFAULT_CENTER = { lat: 34.0, lng: 55.0 };
+
+		const militaryPrefixes = ['RCH','QID','LAGR','NATO','PAT','BOMBER','B52','B1B','TEX','HURK','CFC','GAF','BAF','HAF','IAF','RFF','AF','ZZ','NAVY','USAF','RAF','RCAF','ARMY'];
+		const privateRegPatterns = [/^N[0-9A-Z]{1,5}$/i,/^[A-Z]{1,2}-[A-Z]{3,5}$/i,/^RA-\d{4,}$/i,/^9H-[A-Z]{3}$/i,/^CS-[A-Z]{3}$/i,/^OY-[A-Z]{3}$/i];
+		const airlineLike = /^[A-Z]{2,3}\d{2,4}[A-Z]?$/;
+
+		function toKmH(knots){ return Math.round(knots*1.852); }
+		function feetToMeters(ft){ return Math.round(ft*0.3048); }
+		function lerp(a,b,t){ return a+(b-a)*t; }
+		function hexToRgb(hex){
+			hex = hex.replace('#','');
+			const bigint = parseInt(hex,16);
+			return {r:(bigint>>16)&255,g:(bigint>>8)&255,b:bigint&255};
+		}
+		function rgbToHex(r,g,b){ return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+		function lerpColor(h1,h2,t){ const a=hexToRgb(h1), b=hexToRgb(h2); return rgbToHex(Math.round(lerp(a.r,b.r,t)),Math.round(lerp(a.g,b.g,t)),Math.round(lerp(a.b,b.b,t))); }
+		function normalize(v,min,max){ if(max===min) return 0; const t=(v-min)/(max-min); return Math.max(0,Math.min(1,t)); }
+		function droneShade(alt_m){ const max = alt_m<=120?120:750; return lerpColor(getCssVar('--droneLow'), getCssVar('--droneHigh'), normalize(alt_m||0,0,max)); }
+		function getCssVar(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+		function isHelicopter(f){ const spd=f.spd_kmh||0; const alt=f.alt_m||0; const looks=f.callsign && /(H|HELI|HEL|HEMS|MED|RESCUE)/i.test(f.callsign); return (spd>0&&spd<260)&&(alt>0&&alt<3000)&&looks; }
+		function isDrone(f){ const spd=f.spd_kmh||0; const alt=f.alt_m||0; return (alt>0&&alt<=1200)&&(spd>0&&spd<=120)&&!isHelicopter(f); }
+		function isMilitary(f){ if(!f.callsign) return false; return militaryPrefixes.some(p=>f.callsign.toUpperCase().startsWith(p)); }
+		function isPrivate(f){ if(f.callsign&&airlineLike.test(f.callsign)) return false; if(f.callsign&&privateRegPatterns.some(r=>r.test(f.callsign))) return true; if(f.reg&&privateRegPatterns.some(r=>r.test(f.reg))) return true; return false; }
+		function isPassenger(f){ return !!(f.callsign&&airlineLike.test(f.callsign)); }
+		function categorize(f){ if(isDrone(f)) return 'drone'; if(isHelicopter(f)) return 'helicopter'; if(isMilitary(f)) return 'military'; if(isPassenger(f)) return 'passenger'; if(isPrivate(f)) return 'private'; return 'commercial'; }
+
+		function extractLatLon(arr){
+			for(let i=0;i<arr.length-1;i++){
+				const a=Number(arr[i]); const b=Number(arr[i+1]);
+				if(isFinite(a)&&isFinite(b)&&a>=-90&&a<=90&&b>=-180&&b<=180){ return {lat:a, lon:b, latIdx:i, lonIdx:i+1}; }
+			}
+			return null;
+		}
+		function parseFR24(data){
+			const result=[]; let fullCount=0; if(data.full_count) fullCount=Number(data.full_count)||0;
+			for(const [key,val] of Object.entries(data)){
+				if(!Array.isArray(val)) continue; const arr=val; const ll=extractLatLon(arr); if(!ll) continue;
+				const lat=Number(ll.lat), lon=Number(ll.lon); let heading=null, alt=null, spd=null, callsign=null, reg=null, acType=null;
+				for(let i=0;i<arr.length;i++){
+					const v=arr[i];
+					if(typeof v==='string'){
+						if(!callsign&&/[A-Z0-9]{3,}/.test(v)) callsign=v.trim();
+						if(!reg&&/[-A-Z0-9]{3,}/.test(v)&&/^[A-Z0-9-]{3,}$/.test(v)) reg=v.trim();
+						if(!acType&&/^[A-Z0-9]{3,4}$/.test(v)&&i>ll.lonIdx+3) acType=v.trim();
+					}else if(typeof v==='number'){
+						if(i>ll.lonIdx && heading==null && v>=0 && v<=360) heading=Math.round(v);
+						if(i>ll.lonIdx && alt==null && v>0 && v<65000) alt=Math.round(v);
+						if(i>ll.lonIdx && spd==null && v>=0 && v<1200) spd=Math.round(v);
+					}
+				}
+				const alt_m = alt!=null?feetToMeters(alt):null; const spd_kmh = spd!=null?toKmH(spd):null;
+				result.push({ hex:key, lat, lon, heading, alt_ft:alt, alt_m, spd_kmh, callsign, reg, acType, ts:Date.now() });
+			}
+			return { flights: result, fullCount };
+		}
+
+		async function fetchFR24(bounds){
+			const params = new URLSearchParams({ faa:'1', satellite:'1', mlat:'1', flarm:'1', adsb:'1', gnd:'1', air:'1', vehicles:'1', estimated:'1', maxage:'14400', gliders:'1', stats:'1', bounds:`${bounds.maxLat},${bounds.minLat},${bounds.minLon},${bounds.maxLon}` });
+			const urls=[`https://data-cloud.flightradar24.com/zones/fcgi/js?${params}`, `https://data-live.flightradar24.com/zones/fcgi/feed.js?${params}`];
+			const proxify = (u)=>[u, `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, `https://cors.isomorphic-git.org/${u}`];
+			for(const base of urls){
+				for(const u of proxify(base)){
+					try{ const resp=await fetch(u,{cache:'no-store', headers:{'Accept':'application/json, text/javascript, */*; q=0.01'}}); if(!resp.ok) continue; const text=await resp.text(); let data=null; try{ data=JSON.parse(text);}catch(e){ data=eval('('+text+')'); } if(data&&typeof data==='object') return data; }catch(e){ continue; }
+				}
+			}
+			throw new Error('FR24 fetch failed');
+		}
+
+		function get2DBounds(){ const b = map2d.getBounds(); if(!b) return null; const ne=b.getNorthEast(), sw=b.getSouthWest(); return {minLat:sw.lat(), maxLat:ne.lat(), minLon:sw.lng(), maxLon:ne.lng()}; }
+
+		async function renderFromData(raw){
+			const { flights } = parseFR24(raw);
+			flightsByHex.clear(); flights.forEach(f=>flightsByHex.set(f.hex,f));
+			update2DMarkers();
+			if(use3d) await ensure3D();
+			update3DModels();
+		}
+
+		function colorFor(f){ const cat=categorize(f); if(cat==='drone') return droneShade(f.alt_m||0); if(cat==='military') return getCssVar('--mil'); if(cat==='passenger') return getCssVar('--passenger'); if(cat==='private') return getCssVar('--private'); return getCssVar('--commercial'); }
+
+		function svgIcon(color, rotationDeg){
+			const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="${color}"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>`;
+			const url = 'data:image/svg+xml;utf8,'+encodeURIComponent(svg);
+			const icon = { url, scaledSize: new google.maps.Size(28,28), anchor: new google.maps.Point(14,14), rotation: rotationDeg||0 };
+			return icon;
+		}
+
+		function update2DMarkers(){
+			// remove missing
+			for(const [hex, mk] of markers2d){ if(!flightsByHex.has(hex)){ mk.setMap(null); markers2d.delete(hex);} }
+			for(const f of flightsByHex.values()){
+				const pos = { lat: f.lat, lng: f.lon };
+				const color = colorFor(f);
+				const icon = svgIcon(color, f.heading||0);
+				if(markers2d.has(f.hex)){
+					const mk=markers2d.get(f.hex); mk.setIcon(icon); mk.setPosition(pos);
+				}else{
+					const mk = new google.maps.Marker({ position: pos, icon, map: map2d, title: f.callsign||f.hex });
+					mk.addListener('click', ()=>focusFlight3D(f.hex));
+					markers2d.set(f.hex, mk);
+				}
+			}
+		}
+
+		async function ensure3D(){
+			if(map3dEl) return map3dEl;
+			const lib = await google.maps.importLibrary('maps3d');
+			const { Map3DElement, Model3DElement } = lib;
+			map3dEl = new Map3DElement({ center: { lat: DEFAULT_CENTER.lat, lng: DEFAULT_CENTER.lng, altitude: 2000 }, tilt: 60, mode: 'HYBRID' });
+			document.getElementById('container').append(map3dEl);
+			return map3dEl;
+		}
+
+		function clear3D(){ if(!map3dEl) return; for(const mdl of models3d.values()){ try{ mdl.remove(); }catch(e){} } models3d.clear(); }
+
+		function defaultModelUrl(){
+			// Airplane GLB from glTF-Sample-Models (fallback to Duck if unavailable)
+			return 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/CesiumAir/glTF-Binary/CesiumAir.glb';
+		}
+
+		function update3DModels(){ if(!map3dEl) return; const lib = google.maps.maps3d; const { Model3DElement } = lib;
+			// prune
+			for(const [hex, mdl] of models3d){ if(!flightsByHex.has(hex)){ try{ mdl.remove(); }catch(e){} models3d.delete(hex);} }
+			for(const f of flightsByHex.values()){
+				const pos = { lat: f.lat, lng: f.lon, altitude: Math.max(50, (f.alt_m||500)) };
+				if(models3d.has(f.hex)){
+					const mdl=models3d.get(f.hex); mdl.position = pos; mdl.heading = (f.heading||0);
+				}else{
+					const mdl = new Model3DElement({ src: defaultModelUrl(), position: pos, altitudeMode: 'ABSOLUTE', scale: 1.0, heading: (f.heading||0) });
+					map3dEl.append(mdl); models3d.set(f.hex, mdl);
+				}
+			}
+		}
+
+		async function focusFlight3D(hex){ use3d=true; await ensure3D(); document.getElementById('toggle3d').textContent='2D'; const f = flightsByHex.get(hex); if(!f) return; map3dEl.center = { lat: f.lat, lng: f.lon, altitude: Math.max(400, f.alt_m||1000) }; update3DModels(); }
+
+		async function init(){
+			const { Map } = await google.maps.importLibrary('maps');
+			map2d = new Map(document.getElementById('map2d'), { center: DEFAULT_CENTER, zoom: 5, mapId: undefined, mapTypeId: 'terrain', disableDefaultUI: false });
+			document.getElementById('toggle3d').addEventListener('click', async ()=>{
+				use3d = !use3d; if(use3d){ await ensure3D(); document.getElementById('toggle3d').textContent='2D'; update3DModels(); } else { document.getElementById('toggle3d').textContent='3D'; }
+			});
+			document.getElementById('refreshBtn').addEventListener('click', async ()=>{ await refresh(); });
+			document.getElementById('fileInput').addEventListener('change', onFileSelected);
+			map2d.addListener('idle', ()=>{ lastFetchBounds = get2DBounds(); });
+			await refresh();
+		}
+
+		async function refresh(){ try{ if(!lastFetchBounds){ lastFetchBounds = get2DBounds() || {minLat:20,maxLat:50,minLon:20,maxLon:80}; } const raw = await fetchFR24(lastFetchBounds); await renderFromData(raw); }catch(e){ console.warn(e); }}
+
+		async function onFileSelected(ev){ const file = ev.target.files?.[0]; if(!file) return; const text = await file.text(); let data=null; try{ data=JSON.parse(text);}catch(e){ data=eval('('+text+')'); } if(data) await renderFromData(data); }
+
+		// init
+		init();
+	})();
+	</script>
+</body>
+</html>
