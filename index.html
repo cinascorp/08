@@ -8,7 +8,7 @@
 <style>
 :root{
   --bg:#0a0a0a;
-  --card:#121212;
+  --card:#363030;
   --accent:#00ff41;
   --muted:#bfbfbf
 }
@@ -51,25 +51,25 @@ color:#fff
   cursor:pointer;
   font-weight:700}
 
-.btn.uav{border-color:rgba(0,255,65,0.15)}
-.btn.mil{border-color:rgba(255,68,68,0.12)}
-.btn.tar{border-color:rgba(0,152,219,0.12)}
+.btn.uav{border-color:rgba(0, 255, 64, 0.15)}
+.btn.mil{border-color:rgba(255, 0, 0, 0.12)}
+.btn.tar{border-color:rgba(99, 255, 252, 0.12)}
   
 .lang-toggle{
   position:fixed;
-  top:18px;
-  left:18px;
+  top:10px;
+  right:18px;
   background:var(--card);
   padding:8px;
-  border-radius:10px;
+  border-radius:8px;
   border:1px solid rgba(255,255,255,0.04)}
   
 .lang-toggle button{
   background:transparent;
   border:none;color:var(--muted);
-  padding:6px 8px;
+  padding:4px 5px;
   cursor:pointer;
-  font-weight:700}
+  font-weight:600}
   
 .footer{
   position:fixed;
@@ -94,14 +94,17 @@ color:#fff
 <div class="container">
 <div class="brand" id="brand">سامانه یکپارچه رصد و فرماندهی</div>
 <div class="buttons">
-<a class="btn uav" id="btnUAV" href="uav.html">UAV</a>
-<a class="btn mil" id="btnMIL" href="mil.html">MIL</a>
-<a class="btn tar" id="btnTAR" href="tar.html">TAR</a>
-<a class="btn uav" href="./gmp/index.html">Map</a>
-<a class="btn uav" href="./dist/map-simple/dist/index.html">Map</a>
+<a class="btn tar" id="btnTAR" href="./tar.html">TAR</a>
+<a class="btn mil" id="btnMIL" href="./mil.html">MIL</a>
+<a class="btn uav" id="btnUAV" href="./uav.html">UAV</a>
+
+<a class="btn uav" href="./adsb.html">ADSB</a>
 <a class="btn uav" href="./c4isr.html">C4ISR</a>
-<a class="btn uav" href='./dist/3d-simple-map/dist/index.html'>3d-map</a>
-<a class="btn uav" id="btn3D-map" href="dist/index.html">Map Tools</a>
+<a class="btn uav" href="./gmp/index.html">3d-map</a>
+<a class="btn uav" href="./dist/map-simple/dist/index.html">simpl-Map</a>
+<a class="btn uav" href='./dist/3d-simple-map/dist/index.html'>3d-simple-map</a>
+<a class="btn uav" href="./dist/index.html">Extra Map Tools</a>
+<a class="btn uav" href="./brz.html">internet & local browser</a>
 
 </dive>
 <div class="footer" id="footer">Developed by Cinascorp ©</div>

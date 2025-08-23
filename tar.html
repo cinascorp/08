@@ -1,5 +1,4 @@
-<!doctype html>
-<html lang="en">
+
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,7 +9,7 @@
 	<style>
 	:root {
 			--bg: #ffffff;
-			--panel: #304e78;
+			--panel: #253c63;
 			--text: #ffd400; /* yellow font */
 			--border: #333a42;
 			--muted: #9aa2aa;
@@ -83,7 +82,7 @@
 		/* Make the right menu 74% width on small screens */
 		@media (max-width: 768px) {
 			.offcanvas-end {
-				width: 74vw
+				width: 80vw
 				!important;
 			}
 		}
@@ -136,7 +135,7 @@
 		/* Popup */
 		#popup {
 			position: absolute;
-			font-size: 8px;
+			font-size: 11px;
 			background: rgba(15,20,27,0.98);
 			border: 1px solid var(--border);
 			padding: .5rem .75rem;
@@ -229,7 +228,7 @@
 		style="display:none; 
 		margin-top: 10px; 
 		text-align: center;">
-			<iframe id="aircraft-frame" style="width: 100%; height: 240px; border-radius: 5px; border: 0;" title="Aircraft photo gallery">
+			<iframe id="aircraft-frame" style="width: 100%; height: 240px; border-radius: 5px; border: 0;" title="Aircraft photo gallery" href="https://www.planespotting.be/index.php?page=" >
 			</iframe>
 			<div id="aircraft-links" style="margin-top: 5px;"></div>
 		</div>
@@ -431,7 +430,7 @@
 		const map = new ol.Map({
 			target: 'map',
 			layers: [baseLayer, brightLayer, trackLayer, markerLayer, selectedFlightLayer],
-			view: new ol.View({ center: ol.proj.fromLonLat([9.0, 50.0]), zoom: 5, minZoom: 2, maxZoom: 18 })
+			view: new ol.View({ center: ol.proj.fromLonLat([52.600 , 36.500]), zoom: 4, minZoom: 1, maxZoom: 18 })
 		});
 		
 		// Popup overlay
@@ -512,12 +511,12 @@
 		// Copilot panel: lazy-load and provide context link
 		copilotPanelEl.addEventListener('shown.bs.offcanvas', () => {
 			if (!copilotFrame.src || copilotFrame.src === 'about:blank') {
-				try { copilotFrame.src = 'https://copilot.microsoft.com/'; } catch(e) {}
+				try { copilotFrame.src = 'https://Grok.com/'; } catch(e) {}
 			}
 			const bounds = boundsFromView();
 			const selected = Array.from(selectedFlights).join(', ') || 'none';
 			const context = `Current viewport: lat ${bounds.minLat.toFixed(2)}..${bounds.maxLat.toFixed(2)}, lon ${bounds.minLon.toFixed(2)}..${bounds.maxLon.toFixed(2)}; selected flights: ${selected}`;
-			copilotExternalLink.href = 'https://copilot.microsoft.com/?q=' + encodeURIComponent('Analyze live flights. ' + context);
+			copilotExternalLink.href = 'https://Grok.com/?q=' + encodeURIComponent(' analyze flight and location data and explain in persian if any parameter exist' + context);
 		});
 
 		// Helpers
@@ -849,7 +848,7 @@
 		async function resolveCountry(lat, lon) {
 			const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
 			if (countryCache.has(key)) return countryCache.get(key);
-			const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=3`;
+			const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=1`;
 			const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
 			if (!resp.ok) return null;
 			const j = await resp.json();
@@ -965,12 +964,12 @@
 		function makeFR24Link(f) {
 			const flightPart = (f.callsign || '').replace(/\s+/g,'');
 			const idPart = f.hex;
-			return `https://www.flightradar24.com/${flightPart}/${idPart}/3d`;
+			return `https://premium.flightradar24.com/${flightPart}/${idPart}/3d`;
 		}
 
 		function getAircraftGalleryUrl(f) {
 			if (!f.acType) return null;
-			return `https://www.airplane-pictures.net/search.php?search=${encodeURIComponent(f.acType)}`;
+			return `https://planespotting.be/${encodeURIComponent(f.acType)}`;
 		}
 
 		function showAircraftGallery(f, url) {
